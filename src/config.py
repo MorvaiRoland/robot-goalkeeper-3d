@@ -1,0 +1,1 @@
+# Beállítások (kamera felbontás, motor pinek stb.)
