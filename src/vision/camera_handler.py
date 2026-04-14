@@ -1,5 +1,5 @@
-# src/vision/camera_handler.py
-# Ximea API hívások, képkockák kinyerése
+#src/vision/camera_handler.py
+#Ximea API hívások, képkockák kinyerése
 
 import cv2
 from ximea import xiapi
