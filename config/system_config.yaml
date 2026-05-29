@@ -1,38 +1,82 @@
-# System Configuration File
+# System Configuration – Optimalizált fehér focilabda detektáláshoz
 # Real-Time 3D Ball Detection and Robot Goalkeeper Control
 
-# Networking configuration for Laptop -> RPi communication
+# ---------------------------------------------------------------------------
+# Network (PC → Raspberry Pi)
+# ---------------------------------------------------------------------------
 network:
-  rpi_ip: "127.0.0.1"      # IP address of the Raspberry Pi 5 (change to "127.0.0.1" for local PC loopback testing)
-  port: 5005                  # UDP port for real-time coordinate streaming
+  rpi_ip: "127.0.0.1"
+  port: 5005
 
-# Camera configuration (MindVision MC023CG-SY-UB or standard OpenCV)
+# ---------------------------------------------------------------------------
+# Camera
+# Type options: "ximea" | "mock" | "opencv" | "mindvision"
+# ---------------------------------------------------------------------------
 camera:
-  type: "mock"                 # Options: "mock" (simulator), "opencv" (standard webcams), "mindvision" (industrial SDK)
+  type: "ximea"
   resolution:
     width: 1280
     height: 720
-  fps: 60                      # Frame rate (up to 100+ depending on resolution and SDK settings)
-  exposure_time_us: 10000      # Low exposure time to prevent motion blur of the fast ball
-  gain: 12                     # Analog/digital gain to compensate for low exposure
+  fps: 60
+  exposure_time_us: 800
+  gain: 0.0
+  bandwidth_limit_mbs: 160
 
-# Stereo vision parameters (for 3D triangulation)
+# ---------------------------------------------------------------------------
+# Stereo vision
+# ---------------------------------------------------------------------------
 stereo:
-  baseline_mm: 300.0           # Distance between the optical centers of the left and right cameras (in mm)
-  focal_length_px: 1200.0      # Camera focal length in pixels (determined after calibration)
-  principal_point_x: 640.0     # Optical center X (width / 2)
-  principal_point_y: 360.0     # Optical center Y (height / 2)
-  left_camera_index: 0         # Device index or serial number for the left camera
-  right_camera_index: 1        # Device index or serial number for the right camera
+  baseline_mm: 300.0
+  focal_length_px: 1200.0
+  principal_point_x: 640.0
+  principal_point_y: 360.0
+  left_camera_index: 0
+  right_camera_index: 1
 
-# Ball Detection configurations
+# ---------------------------------------------------------------------------
+# Ball detection  ← OPTIMALIZÁLT FEHÉR FOCILABDÁHOZ
+# ---------------------------------------------------------------------------
 detection:
-  method: "hsv"                # Options: "hsv" (color thresholding) or "yolo" (deep learning)
-  confidence_threshold: 0.5    # Minimum confidence for YOLO detection
-  hsv_bounds:                  # Default bounds for white soccer ball detection (high brightness, low saturation)
+  method: "hybrid"
+
+  # YOLOv8l (large) – pontosabb mint nano/small, még futtatható Hailo-8L-en
+  # Ha a large túl lassú a Hailo NPU-n: válts "yolov8m.pt"-re
+  yolo_model_path: "yolov8l.pt"
+
+  # Kissé alacsonyabb küszöb: a focilabda olykor alacsonyabb COCO confidence-t kap
+  confidence_threshold: 0.35
+
+  # ── HSV maszk – fehér focilabda ──────────────────────────────────────────
+  # FONTOS VÁLTOZÁS: lower_v = 160 (volt: 200)
+  # A focilabda BELSEJÉT SÖTÉT MINTÁK tarkítják → az átlagos fényesség alacsonyabb.
+  # A 160-as V küszöb beengedi az árnyékos/mintás területeket is.
+  # lower_s = 0, upper_s = 60: alacsony szaturáció = fehér/szürke területek
+  hsv_bounds:
     lower_h: 0
     lower_s: 0
-    lower_v: 180
+    lower_v: 160      # ← Csökkentve 200 → 160 (mintás labda belseje is látszik)
     upper_h: 180
-    upper_s: 60
+    upper_s: 60       # ← Növelve 50 → 60 (engedékenyebb fehér szín)
     upper_v: 255
+
+  # ── Hough Circle Transform ────────────────────────────────────────────────
+  # Érzékenyebb beállítások (param2 csökkentve): több jelölt kört enged át,
+  # a kontúr réteg végez végső szűrést.
+  hough:
+    min_dist: 25       # ← Csökkentve 30 → 25
+    param1: 80         # ← Csökkentve 100 → 80 (engedékenyebb él detektor)
+    param2: 25         # ← Csökkentve 30 → 25 (több jelölt kör)
+    min_radius: 8
+    max_radius: 150    # ← Növelve 120 → 150 (közelről nagyon nagy labda)
+
+  # ── Kalman szűrő ─────────────────────────────────────────────────────────
+  kalman:
+    enabled: true
+    process_noise: 0.01
+    measurement_noise: 0.1
+    max_coast_frames: 12   # ← Növelve 10 → 12 (kicsit tovább tart ki)
+
+  # ── Region-of-Interest ────────────────────────────────────────────────────
+  roi:
+    enabled: true
+    padding_factor: 3.0   # ← Növelve 2.5 → 3.0 (nagyobb keresési terület)
