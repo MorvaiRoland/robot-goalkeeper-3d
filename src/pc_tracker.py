@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 
 from common.network import UDPSender
-from detection.ball_detector import BallDetector, DetectionResult
+from detection.ball_detector import BallDetector, DetectionResult, draw_detection
 from detection.camera import MockCamera, MindVisionCamera, XimeaCamera
 from stereo.triangulation import StereoTriangulator
 
@@ -54,23 +54,23 @@ _DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "detection": {
         "method": "hybrid",
-        "yolo_model_path": "yolov8n.pt",
-        "confidence_threshold": 0.4,
+        "yolo_model_path": "yolov8l.pt",    # ← Large modell
+        "confidence_threshold": 0.35,        # ← Kicsit alacsonyabb küszöb
         "hsv_bounds": {
-            "lower_h": 0, "lower_s": 0, "lower_v": 200,
-            "upper_h": 180, "upper_s": 50, "upper_v": 255,
+            "lower_h": 0,   "lower_s": 0,   "lower_v": 160,   # ← V csökkentve
+            "upper_h": 180, "upper_s": 60,  "upper_v": 255,
         },
         "hough": {
-            "min_dist": 30, "param1": 100, "param2": 30,
-            "min_radius": 8, "max_radius": 120,
+            "min_dist": 25, "param1": 80, "param2": 25,       # ← Érzékenyebb
+            "min_radius": 8, "max_radius": 150,
         },
         "kalman": {
             "enabled": True,
             "process_noise": 0.01,
             "measurement_noise": 0.1,
-            "max_coast_frames": 10,
+            "max_coast_frames": 12,            # ← Kicsit több coasting
         },
-        "roi": {"enabled": True, "padding_factor": 2.5},
+        "roi": {"enabled": True, "padding_factor": 3.0},       # ← Nagyobb ROI
     },
 }
 
@@ -362,31 +362,11 @@ def main() -> None:
 
 def _draw_tracking_markers(frame: np.ndarray, result: DetectionResult) -> None:
     """
-    Draw a circle and crosshair at the detected ball centre.
-
-    Colour encodes the detection method:
-      Green  → YOLO
-      Cyan   → HSV + Hough
-      Yellow → Kalman coasting (predicted)
-      Red    → unknown / failure
+    A labda teljes területét kiszínezi + körvonalat + crosshairt rajzol.
+    Az eredeti egyszerű cv2.circle hívások helyett az új draw_detection()-t
+    használja, ami kontúr alapú kitöltést is végez.
     """
-    color = _METHOD_COLOR.get(result.method, _COL_WHITE)
-    cx, cy, r = result.x, result.y, max(result.radius, 8)
-
-    # Dashed ring for predicted (coasting) positions
-    if result.is_predicted:
-        # Draw a thinner, dashed-like circle
-        cv2.circle(frame, (cx, cy), r,     color, 1)
-        cv2.circle(frame, (cx, cy), r + 3, color, 1)
-    else:
-        cv2.circle(frame, (cx, cy), r, color, 2)
-
-    cv2.drawMarker(frame, (cx, cy), color, cv2.MARKER_CROSS, 15, 2)
-
-    # Small confidence badge
-    conf_text = f"{result.confidence:.2f}"
-    cv2.putText(frame, conf_text, (cx + r + 4, cy - r),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+    draw_detection(frame, result, alpha=0.35)
 
 
 def _build_display_frame(

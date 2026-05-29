@@ -39,7 +39,7 @@ except ImportError:
 
 from pc_tracker import load_config, _build_cameras
 from common.network import UDPSender
-from detection.ball_detector import BallDetector, DetectionResult
+from detection.ball_detector import BallDetector, DetectionResult, draw_detection
 from stereo.triangulation import StereoTriangulator
 from detection.camera import MockCamera, XimeaCamera
 
@@ -484,16 +484,7 @@ class TrackerThread(QThread):
     def toggle_recording(self): self._cmd_toggle_rec = True
 
     def _draw_overlay(self, frame: np.ndarray, result: DetectionResult):
-        color = (0, 255, 0)
-        if result.method == "hsv": color = (255, 255, 0)
-        elif result.method == "kalman": color = (0, 220, 255)
-        cx, cy, r = result.x, result.y, max(result.radius, 8)
-        if result.is_predicted:
-            cv2.circle(frame, (cx, cy), r, color, 1)
-            cv2.circle(frame, (cx, cy), r + 3, color, 1)
-        else:
-            cv2.circle(frame, (cx, cy), r, color, 2)
-        cv2.drawMarker(frame, (cx, cy), color, cv2.MARKER_CROSS, 15, 2)
+        draw_detection(frame, result, alpha=0.35)
 
 
 # ---------------------------------------------------------------------------

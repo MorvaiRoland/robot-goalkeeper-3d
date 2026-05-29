@@ -132,6 +132,18 @@ class XimeaCamera(CameraInterface):
             self._cam.open_device()
 
             self._cam.set_imgdataformat("XI_RGB24")
+            
+            # Enable Auto White Balance for proper color representation
+            try:
+                self._cam.enable_auto_wb()
+                logger.info("XimeaCamera[%d] Auto White Balance enabled.", self.camera_index)
+            except Exception:
+                try:
+                    self._cam.set_param("auto_wb", 1)
+                    logger.info("XimeaCamera[%d] auto_wb set to 1.", self.camera_index)
+                except Exception as wb_exc:
+                    logger.warning("XimeaCamera[%d] could not enable auto_wb: %s", self.camera_index, wb_exc)
+
             self._configure_roi()
             self._configure_exposure()
 
@@ -210,8 +222,9 @@ class XimeaCamera(CameraInterface):
                 # Successful frame – reset the consecutive-timeout counter
                 _consecutive_timeouts = 0
 
-                rgb = self._img.get_image_data_numpy()
-                bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                raw_img = self._img.get_image_data_numpy()
+                # XI_RGB24 natively returns a BGR array for OpenCV compatibility in Python
+                bgr = raw_img.copy() if hasattr(raw_img, 'copy') else raw_img
 
                 # Software resize only if sensor ROI could not be set exactly
                 if bgr.shape[1] != self.width or bgr.shape[0] != self.height:

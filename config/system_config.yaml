@@ -1,11 +1,11 @@
-# System Configuration
+# System Configuration – Optimalizált fehér focilabda detektáláshoz
 # Real-Time 3D Ball Detection and Robot Goalkeeper Control
 
 # ---------------------------------------------------------------------------
 # Network (PC → Raspberry Pi)
 # ---------------------------------------------------------------------------
 network:
-  rpi_ip: "127.0.0.1"   # Set to the Pi's actual IP for real deployment
+  rpi_ip: "127.0.0.1"
   port: 5005
 
 # ---------------------------------------------------------------------------
@@ -15,90 +15,68 @@ network:
 camera:
   type: "ximea"
   resolution:
-    width: 1280    # pixels  (sensor max: 1936 × 1216)
+    width: 1280
     height: 720
-    # Optional Hardware ROI offset. If left commented out, the ROI will be auto-centered.
-    # offset_x: 320
-    # offset_y: 200
-  fps: 150          # Only used by mock camera; XIMEA rate is set by exposure/bandwidth
-
-  # ── Exposure & gain for bright outdoor sunlight ─────────────────────────
-  # Short exposure freezes fast ball motion; low gain keeps sensor noise minimal.
-  # Bright sun provides more than enough light even at 800 µs.
-  # Adjust upward (e.g. 5000–15000 µs) for indoor / artificial lighting.
-  exposure_time_us: 800   # 0.8 ms → ~130 FPS at 1280×720 over USB3
-  gain: 0.0               # dB  (range 0–24; use 0 in bright conditions)
-
-  # ── USB3 Bandwidth limit per camera (MB/s) ─────────────────────────────
-  # Two cameras share a single USB3 host controller (~400 MB/s total).
-  # Each camera auto-measures ~396 MB/s independently and tries to use all
-  # of it, which saturates the bus and causes get_image() timeouts.
-  # Set this so 2×limit ≤ 340 MB/s leaving headroom for USB control packets.
-  # At 160 MB/s: 160 MB/s ÷ 3.69 MB/frame (1280×720 RGB24) ≈ 43 FPS per camera.
-  # Reduce further (e.g. 140) if timeouts persist.
+  fps: 60
+  exposure_time_us: 800
+  gain: 0.0
   bandwidth_limit_mbs: 160
 
 # ---------------------------------------------------------------------------
-# Stereo vision (3-D triangulation parameters)
-# All values must be re-measured after physical camera calibration.
+# Stereo vision
 # ---------------------------------------------------------------------------
 stereo:
-  baseline_mm: 300.0          # Distance between left and right lens centers (mm)
-  focal_length_px: 1200.0     # Calibrated focal length in pixels
-  principal_point_x: 640.0    # Optical center X  (≈ width / 2 before calibration)
-  principal_point_y: 360.0    # Optical center Y  (≈ height / 2 before calibration)
-  left_camera_index: 0        # XIMEA device index for the left camera
-  right_camera_index: 1       # XIMEA device index for the right camera
+  baseline_mm: 300.0
+  focal_length_px: 1200.0
+  principal_point_x: 640.0
+  principal_point_y: 360.0
+  left_camera_index: 0
+  right_camera_index: 1
 
 # ---------------------------------------------------------------------------
-# Ball detection
+# Ball detection  ← OPTIMALIZÁLT FEHÉR FOCILABDÁHOZ
 # ---------------------------------------------------------------------------
 detection:
-  # "hybrid" uses all three layers: YOLO → HSV+Hough → Kalman
-  # "yolo"   uses only the YOLO layer (+ Kalman smoothing)
-  # "hsv"    uses only HSV+Hough    (+ Kalman smoothing)
   method: "hybrid"
 
-  # YOLO model path or name.
-  # Default: "yolov8n.pt" (COCO general model, sports ball class 32).
-  # Swap for a fine-tuned soccer-ball model for higher accuracy, e.g.:
-  #   yolo_model_path: "models/yolov8n-soccer.pt"
-  yolo_model_path: "yolov8n.pt"
+  # YOLOv8l (large) – pontosabb mint nano/small, még futtatható Hailo-8L-en
+  # Ha a large túl lassú a Hailo NPU-n: válts "yolov8m.pt"-re
+  yolo_model_path: "yolov8l.pt"
 
-  # Minimum YOLO confidence score accepted (0.0–1.0).
-  # Lower → more detections but more false positives.
-  confidence_threshold: 0.4
+  # Kissé alacsonyabb küszöb: a focilabda olykor alacsonyabb COCO confidence-t kap
+  confidence_threshold: 0.35
 
-  # ── HSV mask (outdoor white/light-coloured ball in bright sunlight) ──────
-  # Use  python3 src/pc_tracker.py --calibrate  to tune these live.
+  # ── HSV maszk – fehér focilabda ──────────────────────────────────────────
+  # FONTOS VÁLTOZÁS: lower_v = 160 (volt: 200)
+  # A focilabda BELSEJÉT SÖTÉT MINTÁK tarkítják → az átlagos fényesség alacsonyabb.
+  # A 160-as V küszöb beengedi az árnyékos/mintás területeket is.
+  # lower_s = 0, upper_s = 60: alacsony szaturáció = fehér/szürke területek
   hsv_bounds:
     lower_h: 0
     lower_s: 0
-    lower_v: 200     # high brightness threshold for outdoor sun
+    lower_v: 160      # ← Csökkentve 200 → 160 (mintás labda belseje is látszik)
     upper_h: 180
-    upper_s: 50      # low saturation → white ball
+    upper_s: 60       # ← Növelve 50 → 60 (engedékenyebb fehér szín)
     upper_v: 255
 
-  # ── Hough Circle Transform parameters ────────────────────────────────────
-  # These control the HSV fallback layer's circle detector.
+  # ── Hough Circle Transform ────────────────────────────────────────────────
+  # Érzékenyebb beállítások (param2 csökkentve): több jelölt kört enged át,
+  # a kontúr réteg végez végső szűrést.
   hough:
-    min_dist: 30       # Minimum distance between detected circle centres (px)
-    param1: 100        # Canny edge detector upper threshold
-    param2: 30         # Accumulator threshold – lower = more (noisier) detections
-    min_radius: 8      # Minimum expected ball radius (px)
-    max_radius: 120    # Maximum expected ball radius (px)
+    min_dist: 25       # ← Csökkentve 30 → 25
+    param1: 80         # ← Csökkentve 100 → 80 (engedékenyebb él detektor)
+    param2: 25         # ← Csökkentve 30 → 25 (több jelölt kör)
+    min_radius: 8
+    max_radius: 150    # ← Növelve 120 → 150 (közelről nagyon nagy labda)
 
-  # ── Kalman filter ─────────────────────────────────────────────────────────
-  # Applied to both left and right camera tracks independently.
+  # ── Kalman szűrő ─────────────────────────────────────────────────────────
   kalman:
     enabled: true
-    process_noise: 0.01       # Higher = trust motion model less, react faster
-    measurement_noise: 0.1    # Higher = trust raw detections less, smoother output
-    max_coast_frames: 10      # Frames to predict without measurement before reset
+    process_noise: 0.01
+    measurement_noise: 0.1
+    max_coast_frames: 12   # ← Növelve 10 → 12 (kicsit tovább tart ki)
 
-  # ── Region-of-Interest (ROI) speedup ─────────────────────────────────────
-  # When enabled, the HSV+Hough layer searches only the area around the last
-  # known ball position, significantly reducing processing time.
+  # ── Region-of-Interest ────────────────────────────────────────────────────
   roi:
     enabled: true
-    padding_factor: 2.5    # ROI half-size = ball_radius × padding_factor
+    padding_factor: 3.0   # ← Növelve 2.5 → 3.0 (nagyobb keresési terület)
