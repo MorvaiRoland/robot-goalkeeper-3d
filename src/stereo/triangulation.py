@@ -66,3 +66,21 @@ class StereoTriangulator:
         y_mm = (self.baseline_mm * (2.0 * self.cy - y_left - y_right)) / (2.0 * disparity)
         
         return True, x_mm, y_mm, z_mm
+
+    def project_to_2d(self, x_mm: float, y_mm: float, z_mm: float) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+        """
+        Projects a 3D coordinate (X, Y, Z) back into left and right 2D camera pixels.
+        Returns ((u_left, v_left), (u_right, v_right)).
+        """
+        if z_mm <= 0.1:
+            return (0, 0), (0, 0)
+            
+        disparity = (self.focal_length_px * self.baseline_mm) / z_mm
+        
+        u_left = self.cx + (disparity / 2.0) + (x_mm * disparity / self.baseline_mm)
+        u_right = self.cx - (disparity / 2.0) + (x_mm * disparity / self.baseline_mm)
+        
+        v = self.cy - (y_mm * disparity / self.baseline_mm)
+        
+        return (int(u_left), int(v)), (int(u_right), int(v))
+

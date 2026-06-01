@@ -19,7 +19,8 @@ class UDPSender:
         self.socket: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         logger.info(f"UDPSender initialized. Target: {self.ip}:{self.port}")
 
-    def send_target_position(self, x: float, y: float, z: float, detected: bool, timestamp: float) -> None:
+    def send_target_position(self, x: float, y: float, z: float, detected: bool, timestamp: float, 
+                             pred_x: float = 0.0, pred_y: float = 0.0, t_impact: float = 0.0) -> None:
         """
         Sends the 3D position of the ball and metadata as a compact JSON string over UDP.
         
@@ -34,7 +35,10 @@ class UDPSender:
             "y": round(y, 2),
             "z": round(z, 2),
             "det": int(detected),
-            "t": timestamp
+            "t": timestamp,
+            "px": round(pred_x, 2),
+            "py": round(pred_y, 2),
+            "ti": round(t_impact, 3)
         }
         
         try:

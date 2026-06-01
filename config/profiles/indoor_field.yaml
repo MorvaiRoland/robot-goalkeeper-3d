@@ -1,0 +1,62 @@
+# Beltéri pálya profil - nagyobb távolságok
+network:
+  rpi_ip: "192.168.1.100"
+  port: 5005
+
+camera:
+  type: "ximea"
+  resolution:
+    width: 1280
+    height: 720
+  fps: 60
+  exposure_time_us: 1200
+  gain: 5.0
+  bandwidth_limit_mbs: 160
+
+stereo:
+  baseline_mm: 500.0
+  focal_length_px: 1345.0
+  principal_point_x: 640.0
+  principal_point_y: 360.0
+  left_camera_index: 0
+  right_camera_index: 1
+
+field_geometry:
+  camera_height_mm: 1500.0
+  baseline_mm: 500.0
+  focal_length_mm: 6.0
+  sensor_width_mm: 5.71
+  sensor_height_mm: 3.25
+  goal_distance_mm: 4000.0
+  goal_width_mm: 2000.0
+  goal_height_mm: 1500.0
+
+detection:
+  method: "hybrid"
+  yolo_model_path: "models/yolov8l.pt"
+  confidence_threshold: 0.35
+  hsv_bounds:
+    lower_h: 0
+    lower_s: 0
+    lower_v: 150
+    upper_h: 180
+    upper_s: 60
+    upper_v: 255
+  hough:
+    min_dist: 20
+    param1: 80
+    param2: 25
+    min_radius: 5
+    max_radius: 120
+  kalman:
+    enabled: true
+    process_noise: 0.01
+    measurement_noise: 0.1
+    max_coast_frames: 15
+  roi:
+    enabled: true
+    padding_factor: 3.0
+  trajectory:
+    enabled: true
+    gravity_mm_s2: 9810.0
+    goal_z_mm: 4000.0

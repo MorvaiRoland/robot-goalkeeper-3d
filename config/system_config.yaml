@@ -34,14 +34,51 @@ stereo:
   right_camera_index: 1
 
 # ---------------------------------------------------------------------------
+# Pálya és kamera geometria – KÖTELEZŐ a helyszíni telepítés előtt mérni!
+#
+# TELEPÍTÉSI ELRENDEZÉS:
+# - A két kamera a pálya két sarkában helyezkedik el, a kapussal egy vonalban.
+# - A kamerák párhuzamosan néznek BEFELÉ a pályára (a labda érkezési iránya felé).
+# - Az 'X' tengely a két kamera közötti vonal (jobb-bal irány).
+# - Az 'Y' tengely a magasság (függőleges).
+# - A 'Z' tengely a mélység: Z=0 a kamerák síkja, a pálya közepe felé növekszik.
+# ---------------------------------------------------------------------------
+field_geometry:
+  # A kamerák lencséjének pontos magassága a talajtól (mm-ben). 
+  # (Mindkét kamerának azonos magasságban kell lennie!)
+  camera_height_mm: 1200.0
+  
+  # A bal és jobb kamera lencséjének középpontja közötti VÍZSZINTES távolság (mm).
+  # Mivel a sarkokban vannak, ez nagyjából a pálya szélessége.
+  baseline_mm: 300.0
+  
+  # Az objektív fizikai fókusztávolsága (rá van írva a lencsére, pl. 6.0 mm).
+  focal_length_mm: 6.0
+  
+  # A kamera képérzékelő chipjének valós fizikai mérete (mm-ben).
+  # XIMEA MC023CG-SY-UB esetén: szélesség = 5.71, magasság = 3.25
+  sensor_width_mm: 5.71
+  sensor_height_mm: 3.25
+  
+  # A kapus (gólvonal) távolsága a kamerák vetítési síkjától a Z tengelyen.
+  # Ha a kamerák pontosan a kapussal egy vonalban vannak (ahogy írtad), ez 0.0 mm.
+  # Ha a kamerák a kapus mögött vannak fél méterrel, akkor ez 500.0 mm.
+  goal_distance_mm: 0.0
+  
+  # A kapu nyílásának méretei (mm-ben) - ez csak a rajzoláshoz (3D nézet) kell.
+  goal_width_mm: 1830.0
+  goal_height_mm: 1220.0
+
+
+# ---------------------------------------------------------------------------
 # Ball detection  ← OPTIMALIZÁLT FEHÉR FOCILABDÁHOZ
 # ---------------------------------------------------------------------------
 detection:
   method: "hybrid"
 
   # YOLOv8l (large) – pontosabb mint nano/small, még futtatható Hailo-8L-en
-  # Ha a large túl lassú a Hailo NPU-n: válts "yolov8m.pt"-re
-  yolo_model_path: "yolov8l.pt"
+  # Ha a large túl lassú a Hailo NPU-n: válts "models/yolov8m.pt"-re
+  yolo_model_path: "models/yolov8l.pt"
 
   # Kissé alacsonyabb küszöb: a focilabda olykor alacsonyabb COCO confidence-t kap
   confidence_threshold: 0.35
@@ -80,3 +117,9 @@ detection:
   roi:
     enabled: true
     padding_factor: 3.0   # ← Növelve 2.5 → 3.0 (nagyobb keresési terület)
+
+  # ── Trajectory Prediction (Goal Intercept) ────────────────────────────────
+  trajectory:
+    enabled: true
+    gravity_mm_s2: 9810.0
+    goal_z_mm: 500.0  # Milyen távol van a kapus síkja (Z) a kamerától

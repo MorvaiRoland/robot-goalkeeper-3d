@@ -40,8 +40,12 @@ except ImportError:
 from pc_tracker import load_config, _build_cameras
 from common.network import UDPSender
 from detection.ball_detector import BallDetector, DetectionResult, draw_detection
+from detection.trajectory_predictor import BallTrajectoryPredictor
 from stereo.triangulation import StereoTriangulator
 from detection.camera import MockCamera, XimeaCamera
+
+from common.config_manager import ConfigManager
+from gui.config_panel import ConfigPanel
 
 # ---------------------------------------------------------------------------
 # Qt Log Handler
@@ -112,6 +116,18 @@ class TrackerThread(QThread):
         self.use_clahe = False
         self.use_blur = False
         self.show_ai_debug = True
+
+        # ── Trajectory Predictor ─────────────────────────────────────────────
+        traj_cfg = config.get("trajectory", {})
+        goal_z   = float(traj_cfg.get("goal_z_mm", config.get("Z_GOAL", 600.0)))
+        gravity  = float(traj_cfg.get("gravity_mm_s2", 9810.0))
+        self._predictor = BallTrajectoryPredictor(
+            gravity_mm_s2=gravity,
+            goal_z_mm=goal_z,
+        )
+        self._pred_last_t: Optional[float] = None
+        # Animációs frame-számláló az overlay pulzáláshoz
+        self._anim_frame: int = 0
 
         # Initialize hardware and models in the main thread to avoid segfaults
         net_cfg    = self.config["network"]
@@ -240,15 +256,42 @@ class TrackerThread(QThread):
             with self._det_lock:
                 det = dict(self._det_state)
 
-            result_l       = det["result_l"]
-            result_r       = det["result_r"]
+            result_l         = det["result_l"]
+            result_r         = det["result_r"]
             tracking_success = det["tracked"]
             x_3d, y_3d, z_3d = det["x"], det["y"], det["z"]
+
+            # Animációs számlálás (overlay pulzáláshoz)
+            self._anim_frame = (self._anim_frame + 1) % 60
 
             # Draw overlays based on latest detection
             if tracking_success:
                 self._draw_overlay(frame_l, result_l)
                 self._draw_overlay(frame_r, result_r)
+
+            # ── Trajectory overlay ───────────────────────────────────────────
+            traj_pts_l  = det.get("traj_pts_l", [])
+            traj_pts_r  = det.get("traj_pts_r", [])
+            impact_pt_l = det.get("impact_pt_l")
+            impact_pt_r = det.get("impact_pt_r")
+            pred_conf   = det.get("pred_conf", 0.0)
+            t_impact_v  = det.get("t_impact", 0.0)
+            pred_x_v    = det.get("pred_x", 0.0)
+            pred_y_v    = det.get("pred_y", 0.0)
+            speed_mms   = det.get("speed_mms", 0.0)
+
+            if traj_pts_l:
+                self._draw_trajectory_overlay(
+                    frame_l, traj_pts_l, impact_pt_l,
+                    pred_conf, t_impact_v, pred_x_v, pred_y_v,
+                    x_3d, y_3d, z_3d, speed_mms, side="L"
+                )
+            if traj_pts_r:
+                self._draw_trajectory_overlay(
+                    frame_r, traj_pts_r, impact_pt_r,
+                    pred_conf, t_impact_v, pred_x_v, pred_y_v,
+                    x_3d, y_3d, z_3d, speed_mms, side="R"
+                )
 
             # AI Debug PiP
             if self.show_ai_debug:
@@ -276,15 +319,28 @@ class TrackerThread(QThread):
             _now = time.perf_counter()
             if _now - _last_gui_emit >= _GUI_EMIT_INTERVAL:
                 _last_gui_emit = _now
+                
+                try:
+                    temp_l = self.cam_left.get_temperature()
+                    temp_r = self.cam_right.get_temperature()
+                except AttributeError:
+                    pass # Fallback ha a kamera nem támogatja
+                
                 stats = {
-                    "fps":     cam_fps,
-                    "det_fps": det["det_fps"],
-                    "tracked": tracking_success,
+                    "fps":      cam_fps,
+                    "det_fps":  det["det_fps"],
+                    "tracked":  tracking_success,
                     "x": x_3d, "y": y_3d, "z": z_3d,
-                    "res_l":   result_l,
-                    "res_r":   result_r,
-                    "temp_l":  temp_l,
-                    "temp_r":  temp_r,
+                    "res_l":    result_l,
+                    "res_r":    result_r,
+                    "temp_l":   temp_l,
+                    "temp_r":   temp_r,
+                    # Trajectory / impact prediction adatok a dock panelnek
+                    "pred_x":   det.get("pred_x", 0.0),
+                    "pred_y":   det.get("pred_y", 0.0),
+                    "t_impact": det.get("t_impact", 0.0),
+                    "pred_conf":det.get("pred_conf", 0.0),
+                    "speed_mms":det.get("speed_mms", 0.0),
                 }
                 # read() already returns a .copy(), so no extra copy needed here
                 self.frames_ready.emit(frame_l, frame_r, stats)
@@ -324,8 +380,54 @@ class TrackerThread(QThread):
                     (result_r.x, result_r.y),
                 )
 
+            # ── Trajectory Prediction ────────────────────────────────────────
+            pred_x = pred_y = t_impact = 0.0
+            traj_pts_l: list = []
+            traj_pts_r: list = []
+            impact_pt_l: Optional[Tuple[int, int]] = None
+            impact_pt_r: Optional[Tuple[int, int]] = None
+            pred_confidence: float = 0.0
+            vx_mms = vy_mms = vz_mms = 0.0
+
+            curr_t = time.perf_counter()
+            if tracking_success:
+                if self._pred_last_t is not None:
+                    dt_pred = curr_t - self._pred_last_t
+                    self._predictor.update(x_3d, y_3d, z_3d, dt_pred)
+                else:
+                    self._predictor.update(x_3d, y_3d, z_3d, 0.033)
+                self._pred_last_t = curr_t
+
+                impact = self._predictor.get_impact_point()
+                if impact is not None:
+                    pred_x, pred_y, t_impact = impact
+
+                pred_confidence = self._predictor.confidence
+                vx_mms, vy_mms, vz_mms = self._predictor.get_velocity_mms()
+
+                # 3D pályapontok → 2D vetítés mindkét kameraképre
+                pts_3d = self._predictor.get_trajectory_points(n=20)
+                for (px, py, pz) in pts_3d:
+                    pt_l, pt_r = self.triangulator.project_to_2d(px, py, pz)
+                    traj_pts_l.append(pt_l)
+                    traj_pts_r.append(pt_r)
+
+                # Becsapódási pont 2D vetítése
+                if impact is not None:
+                    il, ir = self.triangulator.project_to_2d(
+                        pred_x, pred_y, self._predictor.goal_z
+                    )
+                    impact_pt_l = il
+                    impact_pt_r = ir
+            else:
+                self._predictor.reset()
+                self._pred_last_t = None
+
             # UDP – send at detection rate for minimal control latency
-            self.sender.send_target_position(x_3d, y_3d, z_3d, tracking_success, timestamp)
+            self.sender.send_target_position(
+                x_3d, y_3d, z_3d, tracking_success, timestamp,
+                pred_x, pred_y, t_impact
+            )
 
             dt = max(time.perf_counter() - t0, 1e-9)
             det_fps_ema = 0.9 * det_fps_ema + 0.1 * (1.0 / dt)
@@ -337,6 +439,16 @@ class TrackerThread(QThread):
                     "tracked":  tracking_success,
                     "x": x_3d, "y": y_3d, "z": z_3d,
                     "det_fps":  det_fps_ema,
+                    # Trajectory / Impact adatok
+                    "traj_pts_l":    traj_pts_l,
+                    "traj_pts_r":    traj_pts_r,
+                    "impact_pt_l":   impact_pt_l,
+                    "impact_pt_r":   impact_pt_r,
+                    "pred_x":        pred_x,
+                    "pred_y":        pred_y,
+                    "t_impact":      t_impact,
+                    "pred_conf":     pred_confidence,
+                    "speed_mms":     math.sqrt(vx_mms**2 + vy_mms**2 + vz_mms**2),
                 }
 
     def _apply_filters(self, frame: np.ndarray) -> np.ndarray:
@@ -486,17 +598,215 @@ class TrackerThread(QThread):
     def _draw_overlay(self, frame: np.ndarray, result: DetectionResult):
         draw_detection(frame, result, alpha=0.35)
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # Trajectory Overlay – profi vizualizáció a kameraképen
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _draw_trajectory_overlay(
+        self,
+        frame: np.ndarray,
+        traj_pts: list,
+        impact_pt: Optional[Tuple[int, int]],
+        confidence: float,
+        t_impact: float,
+        pred_x: float,
+        pred_y: float,
+        ball_x: float,
+        ball_y: float,
+        ball_z: float,
+        speed_mms: float,
+        side: str = "L",
+    ) -> None:
+        """
+        Megrajzolja a pálya-nyilat, a becsapódási markert és a koordináta panelt.
+        """
+        h, w = frame.shape[:2]
+        n = len(traj_pts)
+        if n < 2:
+            return
+
+        font = cv2.FONT_HERSHEY_SIMPLEX
+
+        # ── Irány-nyíl szín: sebességfüggő ───────────────────────────────────
+        # Lassú (< 0.5 m/s) = cián, gyors (> 2 m/s) = sárga-narancs
+        speed_ms = speed_mms / 1000.0
+        if speed_ms < 0.3:
+            arrow_color = (200, 200, 200)   # szürke – szinte áll
+        elif speed_ms < 1.0:
+            arrow_color = (255, 220, 0)     # cián
+        elif speed_ms < 3.0:
+            arrow_color = (0, 200, 255)     # sárga
+        else:
+            arrow_color = (0, 80, 255)      # narancs-piros (gyors)
+
+        # ── 1. Iránynyíl – vastag egyenes vonal nyílheggyel ──────────────────
+        # Szűrjük a frame-en belüli pontokat, csak azokat rajzoljuk
+        valid_pts = [
+            (int(px), int(py)) for px, py in traj_pts
+            if 0 <= px < w and 0 <= py < h
+        ]
+
+        if len(valid_pts) >= 2:
+            start_pt = valid_pts[0]
+            end_pt   = valid_pts[-1]
+
+            # Árnyék az olvashatóságért (fekete vonal mögötte)
+            cv2.line(frame, start_pt, end_pt, (0, 0, 0), 6, cv2.LINE_AA)
+            # Fő szín
+            cv2.line(frame, start_pt, end_pt, arrow_color, 3, cv2.LINE_AA)
+
+            # Nyílhegy az utolsó pontnál
+            # tip_length: a vonal hosszának hányad részén legyen a nyíl
+            line_len = math.hypot(end_pt[0] - start_pt[0], end_pt[1] - start_pt[1])
+            if line_len > 20:
+                tip = max(0.15, min(0.35, 30.0 / line_len))
+                cv2.arrowedLine(frame, start_pt, end_pt, arrow_color,
+                                3, cv2.LINE_AA, tipLength=tip)
+
+            # Kis pontok a pálya mentén (minden 4. pont)
+            for i in range(2, len(valid_pts) - 1, 4):
+                cv2.circle(frame, valid_pts[i], 3, arrow_color, -1, cv2.LINE_AA)
+                cv2.circle(frame, valid_pts[i], 3, (0, 0, 0), 1, cv2.LINE_AA)
+
+            # Körök a labda jelenlegi pozíciója körül (2 db, halvány)
+            cv2.circle(frame, start_pt, 10, arrow_color, 2, cv2.LINE_AA)
+            cv2.circle(frame, start_pt, 16, arrow_color, 1, cv2.LINE_AA)
+
+        # ── 2. Becsapódási marker (egyszerű, stabil – nincs per-frame addWeighted)
+        if impact_pt is not None:
+            ipx, ipy = int(impact_pt[0]), int(impact_pt[1])
+            if 0 <= ipx < w and 0 <= ipy < h:
+                # Konfidencia alapú szín
+                if confidence > 0.7:
+                    mk_color = (0, 255, 60)     # zöld
+                elif confidence > 0.4:
+                    mk_color = (0, 200, 255)    # sárga
+                else:
+                    mk_color = (0, 120, 255)    # narancs
+
+                # Pulzáló sugár – csak méret animál, nem alpha
+                pulse = math.sin(self._anim_frame / 60.0 * 2 * math.pi)
+                anim_r = int(20 + pulse * 4)    # 16–24 px
+
+                # Árnyék crosshair
+                cv2.drawMarker(frame, (ipx, ipy), (0, 0, 0),
+                               cv2.MARKER_CROSS, anim_r + 20, 5, cv2.LINE_AA)
+                # Fő crosshair
+                cv2.drawMarker(frame, (ipx, ipy), mk_color,
+                               cv2.MARKER_CROSS, anim_r + 20, 3, cv2.LINE_AA)
+
+                # Koncentrikus körök (fix, no addWeighted)
+                cv2.circle(frame, (ipx, ipy), anim_r + 14, mk_color, 1, cv2.LINE_AA)
+                cv2.circle(frame, (ipx, ipy), anim_r + 6,  mk_color, 2, cv2.LINE_AA)
+                cv2.circle(frame, (ipx, ipy), anim_r,      mk_color, 2, cv2.LINE_AA)
+
+                # Középpont
+                cv2.circle(frame, (ipx, ipy), 5, (255, 255, 255), -1, cv2.LINE_AA)
+                cv2.circle(frame, (ipx, ipy), 5, mk_color, 1, cv2.LINE_AA)
+
+                # T-minus felirat a marker felett
+                if t_impact > 0.01:
+                    label = f"T-{t_impact:.2f}s"
+                    lx = ipx - 30
+                    ly = ipy - anim_r - 22
+                    cv2.putText(frame, label, (lx, ly), font, 0.55,
+                                (0, 0, 0), 3, cv2.LINE_AA)
+                    cv2.putText(frame, label, (lx, ly), font, 0.55,
+                                mk_color, 1, cv2.LINE_AA)
+
+        # ── 3. Koordináta panel (jobb alsó sarok) ────────────────────────────
+        if side == "L":
+            self._draw_impact_panel(
+                frame, confidence, t_impact, pred_x, pred_y,
+                ball_x, ball_y, ball_z, speed_mms
+            )
+
+        # ── 4. Felső HUD sáv (3D pozíció + sebesség) ─────────────────────────
+        cv2.rectangle(frame, (0, 0), (w, 36), (0, 0, 0), -1)
+        cv2.rectangle(frame, (0, 0), (w, 36), (40, 40, 40), 1)
+        cv2.putText(
+            frame,
+            f"3D: [{ball_x:+.0f}, {ball_y:+.0f}, {ball_z:.0f}] mm   "
+            f"V: {speed_ms:.2f} m/s",
+            (10, 24), font, 0.55, (0, 255, 100), 1, cv2.LINE_AA
+        )
+
+    def _draw_impact_panel(
+        self,
+        frame: np.ndarray,
+        confidence: float,
+        t_impact: float,
+        pred_x: float,
+        pred_y: float,
+        ball_x: float,
+        ball_y: float,
+        ball_z: float,
+        speed_mms: float,
+    ) -> None:
+        """
+        Koordináta panel rajzolása a jobb alsó sarokba.
+        Félátlátszó fekete háttér + monospace koordináta-szövegek.
+        """
+        h, w = frame.shape[:2]
+
+        # Panel méretek
+        panel_w, panel_h = 280, 148
+        px0 = w - panel_w - 10
+        py0 = h - panel_h - 10
+        px1 = w - 10
+        py1 = h - 10
+
+        # Félátlátszó háttér
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (px0, py0), (px1, py1), (10, 10, 10), -1)
+        cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, frame)
+
+        # Keret
+        conf_color = (
+            (0, 220, 80)   if confidence > 0.7 else
+            (0, 200, 220)  if confidence > 0.4 else
+            (0, 120, 255)
+        )
+        cv2.rectangle(frame, (px0, py0), (px1, py1), conf_color, 2)
+
+        font = cv2.FONT_HERSHEY_SIMPLEX
+
+        # Fejléc
+        cv2.putText(
+            frame, "IMPACT PREDICTION",
+            (px0 + 8, py0 + 20),
+            font, 0.52, (200, 200, 200), 1, cv2.LINE_AA
+        )
+        # Elválasztó vonal
+        cv2.line(frame, (px0 + 4, py0 + 26), (px1 - 4, py0 + 26), (80, 80, 80), 1)
+
+        # Koordináták
+        lines = [
+            (f"X:  {pred_x:+8.1f} mm",  conf_color),
+            (f"Y:  {pred_y:+8.1f} mm",  conf_color),
+            (f"T:  {t_impact:7.3f} s",   (100, 220, 255)),
+            (f"V:  {speed_mms/1000:7.3f} m/s", (180, 180, 180)),
+            (f"Conf: {confidence*100:5.1f} %",   conf_color),
+        ]
+        for i, (text, color) in enumerate(lines):
+            cv2.putText(
+                frame, text,
+                (px0 + 10, py0 + 46 + i * 22),
+                font, 0.52, color, 1, cv2.LINE_AA
+            )
+
 
 # ---------------------------------------------------------------------------
 # Main Window (V4 Offline Simulator Edition)
 # ---------------------------------------------------------------------------
 
 class MainWindow(QMainWindow):
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict, cm: ConfigManager = None):
         super().__init__()
-        self.setWindowTitle("Robot Goalkeeper 3D - Ultimate Control Center V4")
-        self.resize(1600, 900)
         self.config = config
+        self.cm = cm or ConfigManager()
+        self.setWindowTitle("Robot Goalkeeper 3D - Ultimate Monitor V4")
+        self.resize(1600, 1000)
         
         self.current_theme = "dark"
         self.Z_GOAL = 600.0  
@@ -598,6 +908,10 @@ class MainWindow(QMainWindow):
         self.tab_3d = QWidget()
         self._build_tab_3d_arena(self.tab_3d)
         self.tabs.addTab(self.tab_3d, "🧊 3D Robot Simulator")
+        
+        self.tab_config = ConfigPanel(self.cm)
+        self.tab_config.config_applied.connect(self.on_config_applied)
+        self.tabs.addTab(self.tab_config, "⚙ Configuration")
         
         self.dock_settings = QDockWidget("Hardware Settings", self)
         self.dock_settings.setObjectName("HardwareSettingsDock")
@@ -987,21 +1301,51 @@ class MainWindow(QMainWindow):
         stat_lay.addRow("Camera R:", self.lbl_conf_r)
         layout.addWidget(self.grp_stats)
         self.grp_boxes.append(self.grp_stats)
+
+        # ── Impact Prediction Panel ─────────────────────────────────────────
+        _mono_style = "font-family: 'Consolas', 'Monospace'; font-size: 14px; font-weight: bold;"
+        self.grp_impact = QGroupBox("Impact Prediction")
+        imp_lay = QFormLayout(self.grp_impact)
+
+        self.lbl_impact_x    = QLabel("---")
+        self.lbl_impact_y    = QLabel("---")
+        self.lbl_impact_t    = QLabel("---")
+        self.lbl_impact_v    = QLabel("---")
+        self.lbl_impact_conf = QLabel("---")
+
+        for lbl in (self.lbl_impact_x, self.lbl_impact_y, self.lbl_impact_t,
+                    self.lbl_impact_v, self.lbl_impact_conf):
+            lbl.setMinimumWidth(150)
+            lbl.setStyleSheet(_mono_style + " color: #00E5FF;")
+
+        imp_lay.addRow("Impact X (mm):",   self.lbl_impact_x)
+        imp_lay.addRow("Impact Y (mm):",   self.lbl_impact_y)
+        imp_lay.addRow("Time-to-Impact:",  self.lbl_impact_t)
+        imp_lay.addRow("Ball Speed:",      self.lbl_impact_v)
+        imp_lay.addRow("Confidence:",      self.lbl_impact_conf)
+        layout.addWidget(self.grp_impact)
+        self.grp_boxes.append(self.grp_impact)
         
         self.grp_hw = QGroupBox("Hardware Monitor")
         hw_lay = QFormLayout(self.grp_hw)
         self.lbl_cpu = QLabel("0 %")
         self.lbl_ram = QLabel("0 %")
+        self.lbl_gpu = QLabel("0 %")
+        self.lbl_vram = QLabel("0 %")
         self.lbl_temp_l = QLabel("N/A")
         self.lbl_temp_r = QLabel("N/A")
         
         self.lbl_cpu.setMinimumWidth(150)
         self.lbl_ram.setMinimumWidth(150)
+        self.lbl_gpu.setMinimumWidth(150)
+        self.lbl_vram.setMinimumWidth(150)
         self.lbl_temp_l.setMinimumWidth(150)
         self.lbl_temp_r.setMinimumWidth(150)
         
         hw_lay.addRow("CPU Usage:", self.lbl_cpu)
         hw_lay.addRow("RAM Usage:", self.lbl_ram)
+        hw_lay.addRow("GPU Usage:", self.lbl_gpu)
+        hw_lay.addRow("VRAM Usage:", self.lbl_vram)
         hw_lay.addRow("Cam L Temp:", self.lbl_temp_l)
         hw_lay.addRow("Cam R Temp:", self.lbl_temp_r)
         layout.addWidget(self.grp_hw)
@@ -1022,8 +1366,33 @@ class MainWindow(QMainWindow):
             ram = psutil.virtual_memory().percent
             self.lbl_cpu.setText(f"{cpu:.1f} %")
             self.lbl_ram.setText(f"{ram:.1f} %")
-            self.lbl_cpu.setStyleSheet("color: #FF5252;" if cpu > 85 else "color: inherit;")
-            self.lbl_ram.setStyleSheet("color: #FF5252;" if ram > 85 else "color: inherit;")
+            
+            # Szín frissítés - jól látható világos cián vagy piros
+            self.lbl_cpu.setStyleSheet("color: #FF5252; font-weight: bold;" if cpu > 85 else "color: #00E5FF; font-weight: bold;")
+            self.lbl_ram.setStyleSheet("color: #FF5252; font-weight: bold;" if ram > 85 else "color: #00E5FF; font-weight: bold;")
+            
+            # Videókártya adatok lekérése nvidia-smi segítségével
+            try:
+                import subprocess
+                gpu_out = subprocess.check_output(
+                    ['nvidia-smi', '--query-gpu=utilization.gpu,memory.used,memory.total', '--format=csv,noheader,nounits'],
+                    timeout=0.2
+                ).decode('utf-8').strip().split(',')
+                gpu_util = float(gpu_out[0])
+                vram_used = float(gpu_out[1])
+                vram_total = float(gpu_out[2])
+                vram_pct = (vram_used / vram_total) * 100 if vram_total > 0 else 0.0
+                
+                self.lbl_gpu.setText(f"{gpu_util:.1f} %")
+                self.lbl_vram.setText(f"{vram_pct:.1f} % ({int(vram_used)} MB)")
+                self.lbl_gpu.setStyleSheet("color: #FF5252; font-weight: bold;" if gpu_util > 85 else "color: #00E5FF; font-weight: bold;")
+                self.lbl_vram.setStyleSheet("color: #FF5252; font-weight: bold;" if vram_pct > 85 else "color: #00E5FF; font-weight: bold;")
+            except Exception:
+                self.lbl_gpu.setText("N/A")
+                self.lbl_vram.setText("N/A")
+                self.lbl_gpu.setStyleSheet("color: #555555;")
+                self.lbl_vram.setStyleSheet("color: #555555;")
+                
         except Exception:
             pass
 
@@ -1075,6 +1444,23 @@ class MainWindow(QMainWindow):
             logging.error(f"Failed to save config: {exc}")
             QMessageBox.critical(self, "Error", f"Failed to save:\n{exc}")
 
+    @pyqtSlot(dict)
+    def on_config_applied(self, new_cfg: dict):
+        self.config = new_cfg
+        if hasattr(self, 'tracker_thread') and self.tracker_thread.isRunning():
+            self.tracker_thread.config = new_cfg
+            if hasattr(self.tracker_thread, 'triangulator'):
+                st = new_cfg.get("stereo", {})
+                self.tracker_thread.triangulator.B = st.get("baseline_mm", 300.0)
+                self.tracker_thread.triangulator.f = st.get("focal_length_px", 1200.0)
+                self.tracker_thread.triangulator.cx = st.get("principal_point_x", 640.0)
+                self.tracker_thread.triangulator.cy = st.get("principal_point_y", 360.0)
+        self.log_msg("Config applied to runtime.")
+
+    def log_msg(self, text: str):
+        self.console.appendPlainText(f"[{datetime.now().strftime('%H:%M:%S')}] {text}")
+        self.console.moveCursor(QTextCursor.MoveOperation.End)
+
     @pyqtSlot(str)
     def on_log_message(self, msg):
         self.console.appendPlainText(msg)
@@ -1101,6 +1487,35 @@ class MainWindow(QMainWindow):
             logging.error(f"GUI Error in on_frames_ready: {e}")
         current_time = time.time() - self.t_start
         self.data_t.append(current_time)
+
+        # ── Impact Prediction Panel frissítése ───────────────────────────────
+        pred_x_s   = stats.get("pred_x", 0.0)
+        pred_y_s   = stats.get("pred_y", 0.0)
+        t_impact_s = stats.get("t_impact", 0.0)
+        pred_conf  = stats.get("pred_conf", 0.0)
+        speed_mms  = stats.get("speed_mms", 0.0)
+
+        if stats["tracked"] and t_impact_s > 0.01:
+            # Konfidencia-alapú szín
+            if pred_conf > 0.7:
+                impact_style = "font-family: 'Consolas','Monospace'; font-size: 14px; font-weight: bold; color: #00FF88;"
+            elif pred_conf > 0.4:
+                impact_style = "font-family: 'Consolas','Monospace'; font-size: 14px; font-weight: bold; color: #FFD740;"
+            else:
+                impact_style = "font-family: 'Consolas','Monospace'; font-size: 14px; font-weight: bold; color: #FF6E40;"
+            self.lbl_impact_x.setStyleSheet(impact_style)
+            self.lbl_impact_y.setStyleSheet(impact_style)
+            self.lbl_impact_x.setText(f"{pred_x_s:+.1f} mm")
+            self.lbl_impact_y.setText(f"{pred_y_s:+.1f} mm")
+            self.lbl_impact_t.setText(f"{t_impact_s:.3f} s")
+            self.lbl_impact_v.setText(f"{speed_mms/1000:.3f} m/s")
+            self.lbl_impact_conf.setText(f"{pred_conf*100:.1f} %")
+        else:
+            _no_style = "font-family: 'Consolas','Monospace'; font-size: 14px; font-weight: bold; color: #555555;"
+            for lbl in (self.lbl_impact_x, self.lbl_impact_y, self.lbl_impact_t,
+                        self.lbl_impact_v, self.lbl_impact_conf):
+                lbl.setStyleSheet(_no_style)
+                lbl.setText("---")
         
         if stats['tracked']:
             self.lbl_status.setText("TRACKING")
@@ -1112,7 +1527,9 @@ class MainWindow(QMainWindow):
             self.data_z.append(stats['z'])
             
             self.gl_ball.setData(pos=np.array([[stats['x'], stats['y'], stats['z']]]))
-            
+
+            # 3D nézetben predikciós vonal: tracker_thread-ből közvetlenül nem kérjük, de
+            # a meglévő egyszerű numerikus diff-alapon fenntarjuk a 3D nézethez.
             if len(self.data_x) > 5 and not np.isnan(self.data_x[-5]):
                 dt = self.data_t[-1] - self.data_t[-5]
                 if dt > 0:
@@ -1216,8 +1633,15 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-    config = load_config("config/system_config.yaml")
-    window = MainWindow(config)
+    cm = ConfigManager()
+    try:
+        config = cm.load()
+    except Exception as e:
+        config = load_config("config/system_config.yaml") # Fallback
+    
+    config = cm.derive_stereo_params(config)
+    
+    window = MainWindow(config, cm)
     window.showMaximized()
     sys.exit(app.exec())
 

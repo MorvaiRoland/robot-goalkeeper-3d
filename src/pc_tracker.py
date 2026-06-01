@@ -22,6 +22,7 @@ import numpy as np
 
 from common.network import UDPSender
 from detection.ball_detector import BallDetector, DetectionResult, draw_detection
+from detection.trajectory_predictor import BallTrajectoryPredictor
 from detection.camera import MockCamera, MindVisionCamera, XimeaCamera
 from stereo.triangulation import StereoTriangulator
 
@@ -250,6 +251,14 @@ def main() -> None:
         cy=stereo_cfg.get("principal_point_y", cam_cfg["resolution"]["height"] / 2.0),
     )
 
+    # ── Init Trajectory Predictor ────────────────────────────────────────────
+    traj_cfg = config.get("trajectory", {})
+    traj_enabled = traj_cfg.get("enabled", True)
+    gravity = float(traj_cfg.get("gravity_mm_s2", 9810.0))
+    goal_z = float(traj_cfg.get("goal_z_mm", 1500.0))
+    predictor = BallTrajectoryPredictor(gravity_mm_s2=gravity, goal_z_mm=goal_z)
+    last_t = None
+
     # ── Open cameras ─────────────────────────────────────────────────────────
     if not cam_left.open() or not cam_right.open():
         logger.error("Failed to open one or both cameras. Exiting.")
@@ -305,8 +314,44 @@ def main() -> None:
                     _draw_tracking_markers(frame_l, result_l)
                     _draw_tracking_markers(frame_r, result_r)
 
-            # 5. Stream position to Raspberry Pi
-            sender.send_target_position(x_3d, y_3d, z_3d, tracking_success, timestamp)
+            # 5. Predict Trajectory & Stream to Raspberry Pi
+            pred_x, pred_y, t_impact = 0.0, 0.0, 0.0
+            if tracking_success and traj_enabled:
+                curr_t = time.perf_counter()
+                if last_t is not None:
+                    dt = curr_t - last_t
+                    predictor.update(x_3d, y_3d, z_3d, dt)
+                    pred = predictor.predict_intersection()
+                    if pred is not None:
+                        pred_x, pred_y, t_impact = pred
+                        
+                        # Draw the predicted trajectory curve on both frames
+                        state = predictor.get_current_state()
+                        path_pts_l, path_pts_r = [], []
+                        # 10 segments along the curve
+                        for step_t in np.linspace(0, t_impact, num=10):
+                            sim_x = state[0] + state[3] * step_t
+                            sim_y = state[1] + state[4] * step_t - 0.5 * predictor.gravity * (step_t**2)
+                            sim_z = state[2] + state[5] * step_t
+                            pt_l, pt_r = triangulator.project_to_2d(sim_x, sim_y, sim_z)
+                            path_pts_l.append(pt_l)
+                            path_pts_r.append(pt_r)
+                            
+                        # Draw lines
+                        for i in range(1, len(path_pts_l)):
+                            cv2.line(frame_l, path_pts_l[i-1], path_pts_l[i], (255, 0, 255), 2)
+                            cv2.line(frame_r, path_pts_r[i-1], path_pts_r[i], (255, 0, 255), 2)
+                        
+                        # Draw target marker
+                        if len(path_pts_l) > 0:
+                            cv2.drawMarker(frame_l, path_pts_l[-1], (255, 0, 255), cv2.MARKER_CROSS, 20, 3)
+                            cv2.drawMarker(frame_r, path_pts_r[-1], (255, 0, 255), cv2.MARKER_CROSS, 20, 3)
+                last_t = curr_t
+            else:
+                last_t = None
+                predictor.reset()
+
+            sender.send_target_position(x_3d, y_3d, z_3d, tracking_success, timestamp, pred_x, pred_y, t_impact)
 
             # 6. Build display frame and overlay HUD
             display_frame = _build_display_frame(
