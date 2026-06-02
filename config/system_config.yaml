@@ -89,12 +89,12 @@ detection:
 
   # === JELENLEG AKTÍV MODELL ===
   # Csere után: "models/custom_ball.pt"
-  yolo_model_path: "yolov8l.pt"
+  yolo_model_path: "models/custom_ball.engine"
 
   # COCO sports ball osztályindex: 32
   # Custom modellnél (1 osztályos): 0
   # Ha custom_ball.pt-t használsz, állítsd 0-ra!
-  yolo_class_filter: 32
+  yolo_class_filter: 0
 
   # Küszöb: COCO modellnél 0.3-0.4, custom modellnél 0.5+ ajánlott
   confidence_threshold: 0.35

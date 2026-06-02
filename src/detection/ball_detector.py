@@ -244,9 +244,14 @@ class BallDetector:
         try:
             from ultralytics import YOLO
             self.yolo_model = YOLO(model_path)
-            # Warm-up: üres predikció a GPU JIT kompilációhoz
+            # Warm-up: üres predikció a GPU JIT kompilációhoz.
+            # Batch=2 TensorRT motorhoz 2 képet kell küldeni!
             dummy = np.zeros((64, 64, 3), dtype=np.uint8)
-            self.yolo_model.predict(dummy, verbose=False, conf=self.confidence_threshold)
+            try:
+                self.yolo_model.predict([dummy, dummy], verbose=False, conf=self.confidence_threshold)
+            except Exception:
+                # Ha mégsem batch=2, próbáljuk 1 képpel (batch=1 motorhoz)
+                self.yolo_model.predict(dummy, verbose=False, conf=self.confidence_threshold)
             logger.info("YOLOv8 modell betöltve és warm-up kész: %s", model_path)
         except ImportError:
             logger.warning("ultralytics nincs telepítve – YOLO réteg kikapcsolva.")
@@ -349,18 +354,20 @@ class BallDetector:
     def _yolo_batch(
         self, frame_left: np.ndarray, frame_right: np.ndarray
     ) -> Tuple[Optional[DetectionResult], Optional[DetectionResult]]:
+        """Batch=2 TensorRT motorhoz: mindkét kép egyszerre megy a GPU-ra."""
         try:
             results = self.yolo_model.predict(
                 [frame_left, frame_right],
                 verbose=False,
                 conf=self.confidence_threshold,
+                imgsz=640,
             )
             return (
                 self._parse_yolo_result(results[0]),
                 self._parse_yolo_result(results[1]),
             )
         except Exception as exc:
-            logger.warning("YOLO batch hiba: %s", exc)
+            logger.warning("YOLO hiba: %s", exc)
             return None, None
 
     def _parse_yolo_result(self, result: Any) -> Optional[DetectionResult]:
@@ -370,10 +377,12 @@ class BallDetector:
         for box in result.boxes:
             cls  = int(box.cls[0])
             conf = float(box.conf[0])
-            # Osztály szűrés:
-            #   COCO modellnél: class 32 (sports ball)
-            #   Custom 1-class modellnél: class 0 (ball) – nincs más osztály
-            if cls != self._COCO_BALL_CLASS:
+            # Automatikus osztály azonosító választás:
+            #   COCO általános modell (pl. yolov8l.pt): 80 osztály, sports ball = 32
+            #   Custom 1-class modell (pl. custom_ball.engine): csak 1 osztály, index = 0
+            num_classes = len(self.yolo_model.names) if hasattr(self.yolo_model, "names") else 80
+            target_class = 0 if num_classes == 1 else self._COCO_BALL_CLASS
+            if cls != target_class:
                 continue
             if conf < self.confidence_threshold:
                 continue

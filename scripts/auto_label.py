@@ -156,7 +156,7 @@ def run_auto_label(model_path: str, conf_threshold: float, no_review: bool) -> N
             shutil.copy2(img_path, dst_img)
 
             # Label mentése YOLO formátumban
-            x1, y1, x2, y2 = best_box
+            x1, y1, x2, y2, _conf = best_box
             cx = ((x1 + x2) / 2) / w
             cy = ((y1 + y2) / 2) / h
             bw_n = (x2 - x1) / w
