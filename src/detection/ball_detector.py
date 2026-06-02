@@ -171,6 +171,7 @@ class BallDetector:
         self,
         method: str = "hybrid",
         yolo_model_path: str = "yolov8l.pt",   # Large model alapértelmezetten
+        yolo_class_filter: int = 32,            # 32=COCO sports ball, 0=custom 1-class model
         hsv_bounds: Optional[Dict[str, int]] = None,
         hough_cfg: Optional[Dict[str, Any]] = None,
         confidence_threshold: float = 0.35,    # Kicsit alacsonyabb küszöb
@@ -179,6 +180,10 @@ class BallDetector:
     ) -> None:
         self.method = method.lower()
         self.confidence_threshold = confidence_threshold
+        # Az osztályindex amire szűrünk:
+        # 32 = COCO "sports ball" (előtanított modellek)
+        # 0  = custom 1-osztályos modell (a saját betanított modellünk)
+        self._COCO_BALL_CLASS = yolo_class_filter
 
         # ── HSV határok (fehér focilabda napfényben/beltéren) ────────────────
         b = hsv_bounds or {}
@@ -365,6 +370,9 @@ class BallDetector:
         for box in result.boxes:
             cls  = int(box.cls[0])
             conf = float(box.conf[0])
+            # Osztály szűrés:
+            #   COCO modellnél: class 32 (sports ball)
+            #   Custom 1-class modellnél: class 0 (ball) – nincs más osztály
             if cls != self._COCO_BALL_CLASS:
                 continue
             if conf < self.confidence_threshold:

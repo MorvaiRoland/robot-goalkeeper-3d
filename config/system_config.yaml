@@ -71,16 +71,32 @@ field_geometry:
 
 
 # ---------------------------------------------------------------------------
-# Ball detection  ← OPTIMALIZÁLT FEHÉR FOCILABDÁHOZ
+# Ball detection
+#
+# MODELL VÁLASZTÁS:
+#  1. Pretetrained COCO (azonnal fut, de lassú):
+#       yolo_model_path: "yolov8l.pt"          ← pontosan felismeri, ~16-20 FPS
+#       yolo_model_path: "yolov8n.pt"          ← gyors, de COCO-n nem ismeri a labdát
+#
+#  2. CUSTOM (AJÁNLOTT – saját képeken tanított, gyors ÉS pontos):
+#       yolo_model_path: "models/custom_ball.pt"  ← betanítás után ez a cél!
+#       → Tanítás: python scripts/collect_training_frames.py
+#                  python scripts/auto_label.py
+#                  python scripts/train_custom_ball.py
 # ---------------------------------------------------------------------------
 detection:
-  method: "hybrid"
+  method: "yolo"
 
-  # YOLOv8l (large) – pontosabb mint nano/small, még futtatható Hailo-8L-en
-  # Ha a large túl lassú a Hailo NPU-n: válts "models/yolov8m.pt"-re
-  yolo_model_path: "models/yolov8l.pt"
+  # === JELENLEG AKTÍV MODELL ===
+  # Csere után: "models/custom_ball.pt"
+  yolo_model_path: "yolov8l.pt"
 
-  # Kissé alacsonyabb küszöb: a focilabda olykor alacsonyabb COCO confidence-t kap
+  # COCO sports ball osztályindex: 32
+  # Custom modellnél (1 osztályos): 0
+  # Ha custom_ball.pt-t használsz, állítsd 0-ra!
+  yolo_class_filter: 32
+
+  # Küszöb: COCO modellnél 0.3-0.4, custom modellnél 0.5+ ajánlott
   confidence_threshold: 0.35
 
   # ── HSV maszk – fehér focilabda ──────────────────────────────────────────

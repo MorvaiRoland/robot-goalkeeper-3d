@@ -153,6 +153,7 @@ class TrackerThread(QThread):
         self.detector = BallDetector(
             method=det_cfg.get("method", "hybrid"),
             yolo_model_path=det_cfg.get("yolo_model_path", "yolov8n.pt"),
+            yolo_class_filter=det_cfg.get("yolo_class_filter", 32),
             hsv_bounds=det_cfg.get("hsv_bounds"),
             hough_cfg=det_cfg.get("hough"),
             confidence_threshold=det_cfg.get("confidence_threshold", 0.4),

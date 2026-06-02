@@ -81,3 +81,11 @@ Desktop.ini
 *.sqlite
 *.db
 *.pt
+
+# --- Training data (nagy fájlok, ne kerüljenek git-be) ---
+data/raw_frames/
+data/labeled/
+data/ball_training/
+recordings/
+models/ball_detector_training/
+models/custom_ball_training/
