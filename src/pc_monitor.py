@@ -434,7 +434,7 @@ def main():
     args = parser.parse_args()
 
     app = QApplication(sys.argv)
-    qdarktheme.setup_theme("dark")
+    app.setStyleSheet(qdarktheme.load_stylesheet("dark"))
 
     win = PCMonitorWindow(
         rpi_ip=args.rpi_ip,

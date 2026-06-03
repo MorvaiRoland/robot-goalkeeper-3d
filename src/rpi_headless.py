@@ -48,6 +48,7 @@ from stereo.triangulation import StereoTriangulator
 from pc_tracker import load_config, _build_cameras
 
 # ── Logging ──────────────────────────────────────────────────────────────────
+(ROOT / "logs").mkdir(exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -487,7 +488,7 @@ def main():
     # Log mappa
     (ROOT / "logs").mkdir(exist_ok=True)
 
-    config = load_config(args.config, profile=args.profile)
+    config = load_config(args.config)
 
     logger.info("=" * 60)
     logger.info("RPi Headless Tracker indul")
