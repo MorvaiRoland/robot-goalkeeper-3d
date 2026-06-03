@@ -5,8 +5,24 @@
 # Network (PC → Raspberry Pi)
 # ---------------------------------------------------------------------------
 network:
-  rpi_ip: "127.0.0.1"
-  port: 5005
+  rpi_ip: "127.0.0.1"    # Motor vezérlő IP (ha RPi-n fut: 127.0.0.1, külső eszköznél: IP-cím)
+  port: 5005              # Motor vezérlő port
+
+# ---------------------------------------------------------------------------
+# Elosztott architektúra: RPi headless ↔ PC monitor
+# ---------------------------------------------------------------------------
+rpi:
+  # PC monitor IP-je (ahova az RPi elküldi a telemetriát)
+  # Ethernet direkt kábel esetén: PC IP = 192.168.10.2
+  # WiFi hálózaton: a PC tényleges IP-je
+  pc_monitor_ip: "192.168.10.2"
+  pc_monitor_port: 5010          # Telemetria fogadó port a PC-n
+
+  # Parancs fogadó port az RPi-n (PC → RPi konfig parancsok)
+  cmd_listen_port: 5011
+
+  # Preview kép minősége (0-100, kisebb = gyorsabb hálózat, nagyobb = jobb kép)
+  preview_jpeg_quality: 40
 
 # ---------------------------------------------------------------------------
 # Camera
